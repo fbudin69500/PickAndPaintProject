@@ -2,6 +2,7 @@ import vtk, qt, ctk, slicer
 import numpy
 import time
 
+
 class PickAndPaint:
     def __init__(self, parent):
         parent.title = "Pick 'n Paint "
@@ -15,6 +16,33 @@ class PickAndPaint:
         self.parent = parent
 
 class PickAndPaintWidget:
+    class fiducialState(object):
+        def __init__(self):
+            self.fiducialLabel = None
+            self.fiducialScale = 2.0
+            self.radiusROI = 0.0
+            self.indexClosestPoint = -1
+            self.arrayName = None
+            self.mouvementSurfaceStatus = True
+            self.propagatedBool = False
+
+    class inputState (object):
+        def __init__(self):
+            self.inputModelNode = None
+            self.fidNodeID = None
+            self.MarkupAddedEventTag = None
+            self.PointModifiedEventTag = None
+            self.dictionaryLandmark = dict()  # Key = ID of markups
+            self.dictionaryLandmark.clear()
+
+            # ------------------------- PROPAGATION ------------------------
+            self.dictionaryPropInput = dict()  # Key = ID of Propagated Model Node
+            self.dictionaryPropInput.clear()
+            self.propagationType = 0  #  Type of propagation
+                                      #  0: No type specified
+                                      #  1: Correspondent Shapes
+                                      #  2: Non Correspondent Shapes
+
     def __init__(self, parent=None):
         self.developerMode = True
 
@@ -29,7 +57,7 @@ class PickAndPaintWidget:
         if not parent:
             self.setup()
             self.parent.show()
-        
+
     def setup(self):
         print " ----- SetUp ------"
         if self.developerMode:
@@ -39,31 +67,6 @@ class PickAndPaintWidget:
             self.layout.addWidget(self.reloadButton)
             self.reloadButton.connect('clicked()', self.onReload)
 
-        class fiducialState(object):
-            def __init__(self):
-                self.fiducialLabel = None
-                self.inputAssociated = None
-                self.fiducialScale = 2.0
-                self.radiusROI = 1.0
-                self.indexClosestPoint = -1
-                self.arrayName = None
-                self.listIDFidPropagation = list()
-                self.mouvementSurfaceStatus = True
-
-                
-
-            def printElements(self):
-                for i in range(0, self.listPropagatedFiducial.__len__()):
-                    print "inputAssociated = ", self.listPropagatedFiducial[i].inputAssociated.GetName()
-                    print "indexClosestPoint = ", self.listPropagatedFiducial[i].indexClosestPoint
-                    print "radius =", self.listPropagatedFiducial[i].radiusROI
-
-
-        class inputState (object):
-            def __init__(self):
-                self.inputModelNode = None
-                self.listIDFiducial = list()
-
         # ------------------------------------------------------------------------------------
         #                                   Global Variables
         # ------------------------------------------------------------------------------------
@@ -71,22 +74,17 @@ class PickAndPaintWidget:
 
         self.dictionaryInput = dict()
         self.dictionaryInput.clear()
-        self.dictionaryFiducial = dict()
-        self.dictionaryFiducial.clear()
 
-        self.activeDictionaryInputKey = None
-        self.activeInput = None
+        self.propInputID = -1
 
-        self.linkRegion = True
-
-        self.onPropagation = False
-        self.fidAdded = False
-        self.listModelPropagation = list()
+        # ------ REVIEW PROPAGATED MESHES --------------
+        self.propMarkupsNode = slicer.vtkMRMLMarkupsFiducialNode()
+        self.propMarkupsNode.SetName('PropagationMarkupsNode')
+        self.PropPointModifiedEventTag = None
+        self.propLandmarkIndex = -1
+        self.refLandmarkID = None
 
         #-------------------------------------------------------------------------------------
-        self.fidNode = slicer.vtkMRMLMarkupsFiducialNode()
-        slicer.mrmlScene.AddNode(self.fidNode)
-
         # Interaction with 3D Scene
         selectionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLSelectionNodeSingleton")
         selectionNode.SetReferenceActivePlaceNodeClassName("vtkMRMLMarkupsFiducialNode")
@@ -98,78 +96,72 @@ class PickAndPaintWidget:
         # ------------------------------------------------------------------------------------
         inputLabel = qt.QLabel("Model of Reference: ")
 
-        inputModelSelector = slicer.qMRMLNodeComboBox()
-        inputModelSelector.objectName = 'inputFiducialsNodeSelector'
-        inputModelSelector.nodeTypes = ['vtkMRMLModelNode']
-        inputModelSelector.selectNodeUponCreation = False
-        inputModelSelector.addEnabled = False
-        inputModelSelector.removeEnabled = False
-        inputModelSelector.noneEnabled = True
-        inputModelSelector.showHidden = False
-        inputModelSelector.showChildNodeTypes = False
-        inputModelSelector.setMRMLScene(slicer.mrmlScene)
+        self.inputModelSelector = slicer.qMRMLNodeComboBox()
+        self.inputModelSelector.objectName = 'inputFiducialsNodeSelector'
+        self.inputModelSelector.nodeTypes = ['vtkMRMLModelNode']
+        self.inputModelSelector.selectNodeUponCreation = False
+        self.inputModelSelector.addEnabled = False
+        self.inputModelSelector.removeEnabled = False
+        self.inputModelSelector.noneEnabled = True
+        self.inputModelSelector.showHidden = False
+        self.inputModelSelector.showChildNodeTypes = False
+        self.inputModelSelector.setMRMLScene(slicer.mrmlScene)
 
         inputModelSelectorFrame = qt.QFrame(self.parent)
         inputModelSelectorFrame.setLayout(qt.QHBoxLayout())
-        # self.parent.layout().addWidget(inputModelSelectorFrame)
         inputModelSelectorFrame.layout().addWidget(inputLabel)
-        inputModelSelectorFrame.layout().addWidget(inputModelSelector)
+        inputModelSelectorFrame.layout().addWidget(self.inputModelSelector)
 
         #  ------------------------------------------------------------------------------------
         #                                   BUTTONS
         #  ------------------------------------------------------------------------------------
         #  ------------------------------- Add Fiducials Group --------------------------------
         # Fiducials Scale
-        fiducialsScaleWidget = ctk.ctkSliderWidget()
-        fiducialsScaleWidget.singleStep = 0.1
-        fiducialsScaleWidget.minimum = 0.1
-        fiducialsScaleWidget.maximum = 20.0
-        fiducialsScaleWidget.value = 2.0
+        self.fiducialsScaleWidget = ctk.ctkSliderWidget()
+        self.fiducialsScaleWidget.singleStep = 0.1
+        self.fiducialsScaleWidget.minimum = 0.1
+        self.fiducialsScaleWidget.maximum = 20.0
+        self.fiducialsScaleWidget.value = 2.0
         fiducialsScaleLayout = qt.QFormLayout()
-        fiducialsScaleLayout.addRow("Scale: ", fiducialsScaleWidget)
+        fiducialsScaleLayout.addRow("Scale: ", self.fiducialsScaleWidget)
 
         # Add Fiducials Button
-        addFiducialsButton = qt.QPushButton("Add Fiducials")
-        # addFiducialsButton = qt.QPushButton()
-        # addFiducialsButton.setIcon(qt.QIcon("/home/luciemac/Desktop/Code/test_moreFiducials/Icons/Fiducials.png"))
-        addFiducialsButton.enabled = False
+        self.addFiducialsButton = qt.QPushButton(" Add ")
+        self.addFiducialsButton.enabled = True
 
         # Movements on the surface
-        surfaceDeplacementCheckBox = qt.QCheckBox("On Surface")
-        surfaceDeplacementCheckBox.setChecked(True)
+        self.surfaceDeplacementCheckBox = qt.QCheckBox("On Surface")
+        self.surfaceDeplacementCheckBox.setChecked(True)
 
         # Layouts
         scaleAndAddFiducialLayout = qt.QHBoxLayout()
-        scaleAndAddFiducialLayout.addWidget(addFiducialsButton)
+        scaleAndAddFiducialLayout.addWidget(self.addFiducialsButton)
         scaleAndAddFiducialLayout.addLayout(fiducialsScaleLayout)
-        scaleAndAddFiducialLayout.addWidget(surfaceDeplacementCheckBox)
+        scaleAndAddFiducialLayout.addWidget(self.surfaceDeplacementCheckBox)
 
         # Add Fiducials GroupBox
         addFiducialBox = qt.QGroupBox()
-        addFiducialBox.title = "Add Fiducials"
-        # self.parent.layout().addWidget(addFiducialBox)
+        addFiducialBox.title = " Landmarks "
         addFiducialBox.setLayout(scaleAndAddFiducialLayout)
 
         #  ----------------------------------- ROI Group ------------------------------------
         # ROI GroupBox
-        roiGroupBox = qt.QGroupBox()
-        roiGroupBox.title = "Region of interest"
-        # self.parent.layout().addWidget(roiGroupBox)
+        self.roiGroupBox = qt.QGroupBox()
+        self.roiGroupBox.title = "Region of interest"
 
         self.fiducialComboBoxROI = qt.QComboBox()
 
         self.radiusDefinitionWidget = ctk.ctkSliderWidget()
         self.radiusDefinitionWidget.singleStep = 1.0
-        self.radiusDefinitionWidget.minimum = 1.0
+        self.radiusDefinitionWidget.minimum = 0.0
         self.radiusDefinitionWidget.maximum = 20.0
-        self.radiusDefinitionWidget.value = 1.0
+        self.radiusDefinitionWidget.value = 0.0
         self.radiusDefinitionWidget.tracking = False
 
         roiBoxLayout = qt.QFormLayout()
         roiBoxLayout.addRow("Select a Fiducial:", self.fiducialComboBoxROI)
         roiBoxLayout.addRow("Value of radius", self.radiusDefinitionWidget)
-        roiGroupBox.setLayout(roiBoxLayout)
-
+        self.roiGroupBox.setLayout(roiBoxLayout)
 
         self.ROICollapsibleButton = ctk.ctkCollapsibleButton()
         self.ROICollapsibleButton.setText("Selection Region of Interest: ")
@@ -178,7 +170,7 @@ class PickAndPaintWidget:
         ROICollapsibleButtonLayout = qt.QVBoxLayout()
         ROICollapsibleButtonLayout.addWidget(inputModelSelectorFrame)
         ROICollapsibleButtonLayout.addWidget(addFiducialBox)
-        ROICollapsibleButtonLayout.addWidget(roiGroupBox)
+        ROICollapsibleButtonLayout.addWidget(self.roiGroupBox)
         self.ROICollapsibleButton.setLayout(ROICollapsibleButtonLayout)
 
         self.ROICollapsibleButton.checked = True
@@ -189,27 +181,25 @@ class PickAndPaintWidget:
         self.propagationCollapsibleButton.setText(" Propagation: ")
         self.parent.layout().addWidget(self.propagationCollapsibleButton)
 
+        self.shapesLayout = qt.QHBoxLayout()
+        self.correspondentShapes = qt.QRadioButton('Correspondent Meshes')
+        self.correspondentShapes.setChecked(True)
+        self.nonCorrespondentShapes = qt.QRadioButton('Non Correspondent Meshes')
+        self.nonCorrespondentShapes.setChecked(False)
+        self.shapesLayout.addWidget(self.correspondentShapes)
+        self.shapesLayout.addWidget(self.nonCorrespondentShapes)
 
         self.propagationInputComboBox = slicer.qMRMLCheckableNodeComboBox()
         self.propagationInputComboBox.nodeTypes = ['vtkMRMLModelNode']
         self.propagationInputComboBox.setMRMLScene(slicer.mrmlScene)
 
-        self.fiducialPropagationComboBox = qt.QComboBox()
-
-        propagateButton = qt.QPushButton("Propagate")
-        propagateButton.enabled = True
-        linkCheckBox = qt.QCheckBox("Link Region")
-        linkCheckBox.setChecked(True)
-
-        propAndLinkLayout = qt.QHBoxLayout()
-        propAndLinkLayout.addWidget(propagateButton)
-        propAndLinkLayout.addWidget(linkCheckBox)
+        self.propagateButton = qt.QPushButton("Propagate")
+        self.propagateButton.enabled = True
 
         propagationBoxLayout = qt.QVBoxLayout()
+        propagationBoxLayout.addLayout(self.shapesLayout)
         propagationBoxLayout.addWidget(self.propagationInputComboBox)
-        propagationBoxLayout.addWidget(self.fiducialPropagationComboBox)
-        propagationBoxLayout.addLayout(propAndLinkLayout)
-        # propagationBoxLayout.addWidget(propagateButton)
+        propagationBoxLayout.addWidget(self.propagateButton)
 
         self.propagationCollapsibleButton.setLayout(propagationBoxLayout)
         self.propagationCollapsibleButton.checked = False
@@ -219,292 +209,278 @@ class PickAndPaintWidget:
         # ------------------------------------------------------------------------------------
         #                                   CONNECTIONS
         # ------------------------------------------------------------------------------------
-        def onCurrentNodeChanged():
-            print " ---- onCurrentNodeChanged ----"
-            self.activeInput = inputModelSelector.currentNode()
-            if self.activeInput:
-                if not self.dictionaryInput.has_key(self.activeInput.GetName()):
-                    self.dictionaryInput[self.activeInput.GetName()] = inputState()
-                    self.dictionaryInput[self.activeInput.GetName()].inputModelNode = self.activeInput
-                self.activeDictionaryInputKey = self.dictionaryInput[self.activeInput.GetName()]
+        self.inputModelSelector.connect('currentNodeChanged(vtkMRMLNode*)', self.onCurrentNodeChanged)
+        self.addFiducialsButton.connect('clicked()', self.onAddButton)
+        self.fiducialsScaleWidget.connect('valueChanged(double)', self.onFiducialsScaleChanged)
+        self.surfaceDeplacementCheckBox.connect('stateChanged(int)', self.onSurfaceDeplacementStateChanged)
+        self.fiducialComboBoxROI.connect('currentIndexChanged(QString)', self.onFiducialComboBoxROIChanged)
+        self.radiusDefinitionWidget.connect('valueChanged(double)', self.onRadiusValueChanged)
+        self.radiusDefinitionWidget.connect('valueIsChanging(double)', self.onRadiusValueIsChanging)
 
-                for keyInput, valueInput in self.dictionaryInput.iteritems():
-                    if keyInput != self.activeInput.GetName():
-                        if valueInput.listIDFiducial is not None:
-                            for id in valueInput.listIDFiducial:
-                                self.fidNode.SetNthFiducialVisibility(id, False)
+        self.propagationInputComboBox.connect('checkedNodesChanged()', self.onPropagationInputComboBoxCheckedNodesChanged)
+        self.propagateButton.connect('clicked()', self.onPropagateButton)
 
+
+        def onCloseScene(obj, event):
+            # initialize Parameters
+            globals()["PickAndPaint"] = slicer.util.reloadScriptedModule("PickAndPaint")
+        slicer.mrmlScene.AddObserver(slicer.mrmlScene.EndCloseEvent, onCloseScene)
+
+
+    def UpdateInterface(self):
+        print " OnUpdateInterface "
+        if self.inputModelSelector.currentNode():
+            activeInputID = self.inputModelSelector.currentNode().GetID()
+            selectedFidReflID = self.logic.findIDFromLabel(self.dictionaryInput[activeInputID].dictionaryLandmark,
+                                                           self.fiducialComboBoxROI.currentText)
+            if activeInputID != -1:
+                # Reset all Values
+                if self.dictionaryInput[activeInputID].dictionaryLandmark and selectedFidReflID:
+                    activeDictLandmarkValue = self.dictionaryInput[activeInputID].dictionaryLandmark[selectedFidReflID]
+                    self.fiducialsScaleWidget.value = activeDictLandmarkValue.fiducialScale
+                    self.radiusDefinitionWidget.value = activeDictLandmarkValue.radiusROI
+                    if activeDictLandmarkValue.mouvementSurfaceStatus:
+                        self.surfaceDeplacementCheckBox.setChecked(True)
                     else:
-                        for id in valueInput.listIDFiducial:
-                            self.fidNode.SetNthFiducialVisibility(id, True)
-            else:
-                print " Input chosen: None! "
-
-            self.fiducialComboBoxROI.clear()
-            self.fiducialPropagationComboBox.clear()
-            if self.activeDictionaryInputKey.listIDFiducial != None:
-                if self.fiducialComboBoxROI.count == 0:
-                    for id in self.activeDictionaryInputKey.listIDFiducial:
-                        self.fiducialComboBoxROI.addItem(self.fidNode.GetNthFiducialLabel(id))
-                        self.fiducialPropagationComboBox.addItem(self.dictionaryFiducial[id].fiducialLabel)
-            addFiducialsButton.enabled = self.activeInput != None
-
-        def UpdateInterface():
-            print " ---- OnUpdateInterface() -----"
-            selectedFidReflID = findIDFromLabel(self.fiducialComboBoxROI.currentText)
-            if self.activeInput:
-                if self.activeDictionaryInputKey.listIDFiducial :
-                    fiducialsScaleWidget.value = self.dictionaryFiducial[self.activeDictionaryInputKey.listIDFiducial[0]].fiducialScale
-                    if selectedFidReflID != -1:
-                        self.radiusDefinitionWidget.value = self.dictionaryFiducial[selectedFidReflID].radiusROI
-                        if self.dictionaryFiducial[selectedFidReflID].mouvementSurfaceStatus:
-                            surfaceDeplacementCheckBox.setChecked(True)
-                        else :
-                            surfaceDeplacementCheckBox.setChecked(False)
+                        self.surfaceDeplacementCheckBox.setChecked(False)
                 else:
-                    self.radiusDefinitionWidget.value = 1.0
+                    self.radiusDefinitionWidget.value = 0.0
+                    self.fiducialsScaleWidget.value = 2.0
 
-        def findIDFromLabel( fiducialLabel ):
-            fiducialID = -1
-            if self.activeDictionaryInputKey.listIDFiducial != None:
-                for id in self.activeDictionaryInputKey.listIDFiducial:
-                    print " Id = ", id
-                    if self.dictionaryFiducial[id].fiducialLabel == fiducialLabel:
-                        fiducialID = id
-            return fiducialID
+                self.logic.UpdateThreeDView(self.inputModelSelector.currentNode(),
+                                            self.dictionaryInput,
+                                            self.fiducialComboBoxROI.currentText,
+                                            "UpdateInterface")
 
-        def onFiducialComboBoxROIChanged():
-            print "-------- ComboBox changement --------"
-            UpdateInterface()
+    def onCurrentNodeChanged(self):
+        print " ------------------------------------ onCurrentNodeChanged ------------------------------------"
+        if self.inputModelSelector.currentNode():
+            activeInputID = self.inputModelSelector.currentNode().GetID()
+            if activeInputID:
+                if not self.dictionaryInput.has_key(activeInputID):
+                    self.dictionaryInput[activeInputID] = self.inputState()
+                    # self.dictionaryInput[activeInputID].inputModelNode = activeInput
+                    fidNode  = slicer.vtkMRMLMarkupsFiducialNode()
+                    slicer.mrmlScene.AddNode(fidNode)
+                    self.dictionaryInput[activeInputID].fidNodeID = fidNode.GetID()
 
-        def onAddButton():
-            self.interactionNode.SetCurrentInteractionMode(1)
-            UpdateInterface()
+                    # Observers Fiducials Node:
+                    self.dictionaryInput[activeInputID].MarkupAddedEventTag = \
+                        fidNode.AddObserver(fidNode.MarkupAddedEvent, self.onMarkupAddedEvent)
 
-        def onFiducialsScaleChanged():
-            print " onFiducialsScaleChanged "
-            if self.activeInput:
-                for id in self.activeDictionaryInputKey.listIDFiducial:
-                    self.dictionaryFiducial[id].fiducialScale = fiducialsScaleWidget.value
-                if self.fidNode:
-                    displayFiducialNode = self.fidNode.GetMarkupsDisplayNode()
+                    self.dictionaryInput[activeInputID].PointModifiedEventTag = \
+                        fidNode.AddObserver(fidNode.PointModifiedEvent, self.onPointModifiedEvent)
+                else:
+                    print "Key already exists"
+                    slicer.modules.markups.logic().SetActiveListID(slicer.mrmlScene.GetNodeByID(self.dictionaryInput[activeInputID].fidNodeID))
+
+
+                # Update Fiducial ComboBox and PropFidComboBox
+                self.fiducialComboBoxROI.clear()
+                fidNode = slicer.app.mrmlScene().GetNodeByID(self.dictionaryInput[activeInputID].fidNodeID)
+                if fidNode:
+                    numOfFid = fidNode.GetNumberOfMarkups()
+                    if numOfFid > 0:
+                        if self.fiducialComboBoxROI.count == 0:
+                            for i in range(0, numOfFid):
+                                landmarkLabel = fidNode.GetNthMarkupLabel(i)
+                                self.fiducialComboBoxROI.addItem(landmarkLabel)
+
+                for node in self.propagationInputComboBox.checkedNodes():
+                    print node.GetName()
+                    self.propagationInputComboBox.setCheckState(node, 0)
+
+                self.logic.UpdateThreeDView(self.inputModelSelector.currentNode(),
+                                            self.dictionaryInput,
+                                            self.fiducialComboBoxROI.currentText,
+                                            'onCurrentNodeChanged')
+            else:
+                print ' Input chosen: None! '
+
+    def onAddButton(self):
+        self.interactionNode.SetCurrentInteractionMode(1)
+
+    def onFiducialsScaleChanged(self):
+        print " ------------------------------------ onFiducialsScaleChanged ------------------------------------ "
+        if self.inputModelSelector.currentNode():
+            activeInput = self.inputModelSelector.currentNode()
+            fidNode = slicer.app.mrmlScene().GetNodeByID(self.dictionaryInput[activeInput.GetID()].fidNodeID)
+            if activeInput:
+                for value in self.dictionaryInput[activeInput.GetID()].dictionaryLandmark.itervalues():
+                    value.fiducialScale = self.fiducialsScaleWidget.value
+                    print value.fiducialScale
+                if fidNode:
+                    displayFiducialNode = fidNode.GetMarkupsDisplayNode()
                     disabledModify = displayFiducialNode.StartModify()
-                    displayFiducialNode.SetGlyphScale(fiducialsScaleWidget.value)
-                    displayFiducialNode.SetTextScale(fiducialsScaleWidget.value)
+                    displayFiducialNode.SetGlyphScale(self.fiducialsScaleWidget.value)
+                    displayFiducialNode.SetTextScale(self.fiducialsScaleWidget.value)
                     displayFiducialNode.EndModify(disabledModify)
                 else:
                     print "Error with fiducialNode"
 
-        def onSurfaceDeplacementStateChanged():
-            print  " onSurfaceDeplacementStateChanged "
-            selectedFidReflID = findIDFromLabel(self.fiducialComboBoxROI.currentText)
-            if self.activeInput:
-                if surfaceDeplacementCheckBox.isChecked():
-                    self.dictionaryFiducial[selectedFidReflID].mouvementSurfaceStatus = True
-                    for id in self.activeDictionaryInputKey.listIDFiducial:
-                        self.dictionaryFiducial[id].indexClosestPoint = \
-                            self.logic.getClosestPointIndex(self.fidNode,
-                                                            self.dictionaryFiducial[id].inputAssociated,
-                                                            id)
+    def onSurfaceDeplacementStateChanged(self):
+        print " ------------------------------------ onSurfaceDeplacementStateChanged ------------------------------------"
+        if self.inputModelSelector.currentNode():
+            activeInput = self.inputModelSelector.currentNode()
+            fidNode = slicer.app.mrmlScene().GetNodeByID(self.dictionaryInput[activeInput.GetID()].fidNodeID)
+
+            selectedFidReflID = self.logic.findIDFromLabel(self.dictionaryInput[activeInput.GetID()].dictionaryLandmark,
+                                                           self.fiducialComboBoxROI.currentText)
+            if selectedFidReflID:
+                if self.surfaceDeplacementCheckBox.isChecked():
+                    self.dictionaryInput[activeInput.GetID()].dictionaryLandmark[selectedFidReflID].mouvementSurfaceStatus = True
+                    for key, value in self.dictionaryInput[activeInput.GetID()].dictionaryLandmark.iteritems():
+                        markupsIndex = fidNode.GetMarkupIndexByID(key)
+                        if value.mouvementSurfaceStatus:
+                           value.indexClosestPoint = self.logic.getClosestPointIndex(fidNode,
+                                                                                     slicer.util.getNode(activeInput.GetID()),
+                                                                                     markupsIndex)
+                           self.logic.replaceLandmark(slicer.util.getNode(activeInput.GetID()),
+                                                      fidNode,
+                                                      markupsIndex,
+                                                      value.indexClosestPoint)
                 else:
-                    self.dictionaryFiducial[selectedFidReflID].mouvementSurfaceStatus = False
+                    self.dictionaryInput[activeInput.GetID()].dictionaryLandmark[selectedFidReflID].mouvementSurfaceStatus = False
 
-        def onRadiusValueIsChanging():
-            print " -------------------------- onRadiusValueIsChanging -----------------------------"
+    def onFiducialComboBoxROIChanged(self):
+        print "-------- ComboBox changement --------"
+        self.UpdateInterface()
 
-        def onRadiusValueChanged():
-            print " onRadiusValueChanged "
-            selectedFidReflID = findIDFromLabel(self.fiducialComboBoxROI.currentText)
-            if selectedFidReflID != -1:
-                self.dictionaryFiducial[selectedFidReflID].radiusROI = self.radiusDefinitionWidget.value
-                if self.activeDictionaryInputKey:
-                    if not self.dictionaryFiducial[selectedFidReflID].mouvementSurfaceStatus:
-                        surfaceDeplacementCheckBox.setChecked(True)
-                        self.dictionaryFiducial[selectedFidReflID].mouvementSurfaceStatus = True
+    def onRadiusValueIsChanging(self):
+        print " ------------------------------------ onRadiusValueIsChanging ------------------------------------"
 
-                    self.radiusDefinitionWidget.setEnabled(False)
-                    self.logic.getNeighbor(self.dictionaryFiducial[selectedFidReflID])
-                    self.radiusDefinitionWidget.setEnabled(True)
+    def onRadiusValueChanged(self):
+        print " ------------------------------------ onRadiusValueChanged ---------------------------------------"
+        if self.inputModelSelector.currentNode():
+            activeInput = self.inputModelSelector.currentNode()
+            selectedFidReflID = self.logic.findIDFromLabel(self.dictionaryInput[activeInput.GetID()].dictionaryLandmark,
+                                                           self.fiducialComboBoxROI.currentText)
+            if selectedFidReflID and self.radiusDefinitionWidget.value != 0:
+                activeLandmarkState = self.dictionaryInput[activeInput.GetID()].dictionaryLandmark[selectedFidReflID]
+                activeLandmarkState.radiusROI = self.radiusDefinitionWidget.value
+            #     if self.activeDictionaryInputKey:
+                if not activeLandmarkState.mouvementSurfaceStatus:
+                    self.surfaceDeplacementCheckBox.setChecked(True)
+                    activeLandmarkState.mouvementSurfaceStatus = True
 
-                    if self.dictionaryFiducial[selectedFidReflID].listIDFidPropagation != None:
-                        for id in self.dictionaryFiducial[selectedFidReflID].listIDFidPropagation:
-                            self.dictionaryFiducial[id].radiusROI = self.radiusDefinitionWidget.value
-                            self.logic.getNeighbor(self.dictionaryFiducial[id])
+                self.radiusDefinitionWidget.setEnabled(False)
+                listID = self.logic.defineNeighbor(activeInput,
+                                                   activeLandmarkState.indexClosestPoint,
+                                                   activeLandmarkState.radiusROI)
+                self.logic.addArrayFromIdList(listID, activeInput, activeLandmarkState.arrayName)
+                self.logic.displayROI(activeInput, activeLandmarkState.arrayName)
+                self.radiusDefinitionWidget.setEnabled(True)
             self.radiusDefinitionWidget.tracking = False
-            UpdateInterface()
 
-        def onPropagationInputComboBoxCheckedNodesChanged():
-            if self.activeInput:
-                self.listModelPropagation = self.propagationInputComboBox.checkedNodes()
+    def onPropagationInputComboBoxCheckedNodesChanged(self):
+        if self.inputModelSelector.currentNode():
+            activeInput = self.inputModelSelector.currentNode()
+            if activeInput:
+                self.dictionaryInput[activeInput.GetID()].dictionaryPropInput.clear()
+                list = self.propagationInputComboBox.checkedNodes()
+            for model in list:
+                if model.GetID() != activeInput.GetID():
+                    self.dictionaryInput[activeInput.GetID()].dictionaryPropInput[model.GetID()] = dict()
+            print self.dictionaryInput[activeInput.GetID()].dictionaryPropInput
 
-        def onPropagateButton():
-            self.onPropagation = True
-            fiducialToPropagateID = findIDFromLabel(self.fiducialPropagationComboBox.currentText)
-            listFiducialProp = self.dictionaryFiducial[fiducialToPropagateID].listIDFidPropagation
-            if self.listModelPropagation != None:
-                for model in self.listModelPropagation:
-                    if model.GetName() != self.activeInput.GetName():
-                        boolAlreadyExist = False
-                        print "listFiducialProp : ", listFiducialProp
-                        if listFiducialProp != None:
-                            for fidPropId in listFiducialProp:
-                                print "     inputAssociated:", self.dictionaryFiducial[fidPropId].inputAssociated.GetName()
-                                print "     model.GetName():", model.GetName()
-                                if self.dictionaryFiducial[fidPropId].inputAssociated.GetName() == model.GetName():
-                                    boolAlreadyExist = True
-                                    fidID = fidPropId
-                            print "boolAlreadyExist", boolAlreadyExist
-                            if  boolAlreadyExist:
-                                print " TEST TEST TEST "
-                                fidCoord = numpy.zeros(3)
-                                self.fidNode.GetNthFiducialPosition(fiducialToPropagateID, fidCoord)
-                                self.fidNode.SetNthFiducialPosition(fidID,
-                                                                    fidCoord[0],
-                                                                    fidCoord[1],
-                                                                    fidCoord[2])
-                                self.dictionaryFiducial[fidID].indexClosestPoint = \
-                                    self.logic.getClosestPointIndex(self.fidNode, self.dictionaryFiducial[fidID].inputAssociated, fidID)
-                                print "BEFORE"
-                                self.logic.getNeighbor(self.dictionaryFiducial[fidID])
-                                print "AFTER"
-                            else:
-                                fiducialToAddState = fiducialState()
-                                fiducialToAddState.inputAssociated = model
-                                self.logic.propagateFiducial(self.fidNode,
-                                                             fiducialToPropagateID,
-                                                             self.dictionaryFiducial[fiducialToPropagateID],
-                                                             fiducialToAddState,
+    def onPropagateButton(self):
+        print " ------------------------------------ onPropagateButton -------------------------------------- "
+        if self.inputModelSelector.currentNode():
+            activeInput = self.inputModelSelector.currentNode()
+            if self.correspondentShapes.isChecked():
+                # print "CorrespondentShapes"
+                self.dictionaryInput[activeInput.GetID()].propagationType = 1
+                for value in self.dictionaryInput[activeInput.GetID()].dictionaryLandmark.itervalues():
+                    arrayName = value.arrayName
+                    value.propagatedBool = True
+                    for IDModel in self.dictionaryInput[activeInput.GetID()].dictionaryPropInput.iterkeys():
+                        model = slicer.mrmlScene.GetNodeByID(IDModel)
+                        self.logic.propagateCorrespondent(activeInput, model, arrayName)
+            else:
+                # print "nonCorrespondentShapes"
+                self.dictionaryInput[activeInput.GetID()].propagationType = 2
+                for fiducialID, fiducialState in self.dictionaryInput[activeInput.GetID()].dictionaryLandmark.iteritems():
+                    fiducialState.propagatedBool = True
+                    for IDModel, dict in self.dictionaryInput[activeInput.GetID()].dictionaryPropInput.iteritems():
+                        model = slicer.mrmlScene.GetNodeByID(IDModel)
+                        self.logic.propagateNonCorrespondent(self.dictionaryInput[activeInput.GetID()].fidNodeID,
+                                                             fiducialID,
+                                                             fiducialState,
                                                              model)
-                                self.logic.getNeighbor(fiducialToAddState)
-                                self.dictionaryFiducial[self.fidNode.GetNumberOfMarkups() - 1] = fiducialToAddState
-                                self.dictionaryFiducial[fiducialToPropagateID].listIDFidPropagation.append(self.fidNode.GetNumberOfMarkups() - 1)
-                        else:
-                            fiducialToAddState = fiducialState()
-                            fiducialToAddState.inputAssociated = model
-                            self.logic.propagateFiducial(self.fidNode,
-                                                         fiducialToPropagateID,
-                                                         self.dictionaryFiducial[fiducialToPropagateID],
-                                                         fiducialToAddState,
-                                                         model)
-                            self.logic.getNeighbor(fiducialToAddState)
-                            self.dictionaryFiducial[self.fidNode.GetNumberOfMarkups() - 1] = fiducialToAddState
-                            self.dictionaryFiducial[fiducialToPropagateID].listIDFidPropagation.append(self.fidNode.GetNumberOfMarkups() - 1)
+            self.UpdateInterface()
 
-            self.onPropagation = False
 
-        def onLinkCheckBoxStateChanged():
-            if linkCheckBox.isChecked():
-                self.linkRegion = True
-                selectedFidID = findIDFromLabel(self.fiducialPropagationComboBox.currentText)
-                if self.dictionaryFiducial[selectedFidID].listIDFidPropagation != None :
-                    fidCoord = numpy.zeros(3)
-                    self.fidNode.GetNthFiducialPosition(selectedFidID, fidCoord)
-                    for id in self.dictionaryFiducial[selectedFidID].listIDFidPropagation:
-                        self.fidNode.SetNthFiducialPosition(id,
-                                                            fidCoord[0],
-                                                            fidCoord[1],
-                                                            fidCoord[2])
-                        self.dictionaryFiducial[id].indexClosestPoint = self.logic.getClosestPointIndex(self.fidNode,
-                                                                                                        self.dictionaryFiducial[id].inputAssociated,
-                                                                                                        id)
-            else:
-                self.linkRegion = False
+    def onMarkupAddedEvent (self, obj, event):
+        if self.inputModelSelector.currentNode():
+            print" ------------------------------------ onMarkupAddedEvent --------------------------------------"
+            activeInput = self.inputModelSelector.currentNode()
+            # print " Number of Fiducial ", obj.GetNumberOfMarkups()
+            numOfMarkups = obj.GetNumberOfMarkups()
+            markupID = obj.GetNthMarkupID(numOfMarkups-1)
 
-        inputModelSelector.connect('currentNodeChanged(vtkMRMLNode*)', onCurrentNodeChanged)
-        addFiducialsButton.connect('clicked()', onAddButton)
-        fiducialsScaleWidget.connect('valueChanged(double)', onFiducialsScaleChanged)
-        surfaceDeplacementCheckBox.connect('stateChanged(int)', onSurfaceDeplacementStateChanged)
-        self.fiducialComboBoxROI.connect('currentIndexChanged(QString)', onFiducialComboBoxROIChanged)
-        self.radiusDefinitionWidget.connect('valueChanged(double)', onRadiusValueChanged)
-        self.radiusDefinitionWidget.connect('valueIsChanging(double)', onRadiusValueIsChanging)
-        self.propagationInputComboBox.connect('checkedNodesChanged()', onPropagationInputComboBoxCheckedNodesChanged)
-        propagateButton.connect('clicked()', onPropagateButton)
-        linkCheckBox.connect('stateChanged(int)', onLinkCheckBoxStateChanged)
+            self.dictionaryInput[activeInput.GetID()].dictionaryLandmark[markupID] = self.fiducialState()
 
-        # ------------------------------------------------------------------------------------
-        #                                   OBSERVERS
-        # ------------------------------------------------------------------------------------
-        def onMarkupAddedEvent (obj, event):
-            print " ---- onMarkupAddedEvent ----"
-            # print " OBJET : ", obj
-            if self.onPropagation == False :
-                print " Number of Fiducial ", self.fidNode.GetNumberOfMarkups()
-                self.activeDictionaryInputKey.listIDFiducial.append(self.fidNode.GetNumberOfMarkups() - 1)
-                listLength = self.activeDictionaryInputKey.listIDFiducial.__len__()
+            fiducialLabel = '  ' + str(numOfMarkups)
+            self.dictionaryInput[activeInput.GetID()].dictionaryLandmark[markupID].fiducialLabel = fiducialLabel
 
-                self.dictionaryFiducial[self.fidNode.GetNumberOfMarkups() - 1] = fiducialState()
-                self.dictionaryFiducial[self.fidNode.GetNumberOfMarkups() - 1].inputAssociated = self.activeInput
+            obj.SetNthFiducialLabel(numOfMarkups-1, fiducialLabel)
 
-                fiducialLabel = self.activeDictionaryInputKey.inputModelNode.GetName()+'_'+str(listLength)
-                self.dictionaryFiducial[self.fidNode.GetNumberOfMarkups() - 1].fiducialLabel = fiducialLabel
+            arrayName = activeInput.GetName()+'_'+str(numOfMarkups)+"_ROI"
+            self.dictionaryInput[activeInput.GetID()].dictionaryLandmark[markupID].arrayName = arrayName
+            #
+            self.fiducialComboBoxROI.addItem(fiducialLabel)
+            self.fiducialComboBoxROI.setCurrentIndex(self.fiducialComboBoxROI.count-1)
 
-                self.fidNode.SetNthFiducialLabel(self.activeDictionaryInputKey.listIDFiducial[listLength-1],
-                                                 fiducialLabel)
-                arrayName = self.dictionaryFiducial[self.fidNode.GetNumberOfMarkups() - 1].fiducialLabel + "_ROI"
-                self.dictionaryFiducial[self.fidNode.GetNumberOfMarkups() - 1].arrayName = arrayName
+            self.UpdateInterface()
 
-                self.fiducialComboBoxROI.addItem(fiducialLabel)
-                self.fiducialPropagationComboBox.addItem(fiducialLabel)
-                UpdateInterface()
-
-            else:
-                print "fiducial added because of propagation"
-
-        def onPointModifiedEvent ( obj, event):
-            print " ------ onPointModifiedEvent ------ "
+    def onPointModifiedEvent ( self, obj, event):
+        print " ------------------------------------ onPointModifiedEvent -------------------------------------- "
+        if self.inputModelSelector.currentNode():
+            activeInput = self.inputModelSelector.currentNode()
+            fidNode = slicer.app.mrmlScene().GetNodeByID(self.dictionaryInput[activeInput.GetID()].fidNodeID)
             # remove observer to make sure, the callback function won't be disturbed
-            self.fidNode.RemoveObserver(self.PointModifiedEventTag)
-            print "self.linkRegion: " , self.linkRegion
-            if self.linkRegion:
-                i = 0
-                for key, value in self.dictionaryFiducial.iteritems():
-                    if value.mouvementSurfaceStatus:
-                       value.indexClosestPoint =  self.logic.getClosestPointIndex(self.fidNode,
-                                                                                  value.inputAssociated,
-                                                                                  key)
-                    if value.radiusROI >= 1:
-                        self.logic.getNeighbor(value)
+            fidNode.RemoveObserver(self.dictionaryInput[activeInput.GetID()].PointModifiedEventTag)
+            selectedFiducialID = self.logic.findIDFromLabel(self.dictionaryInput[activeInput.GetID()].dictionaryLandmark,
+                                                            self.fiducialComboBoxROI.currentText)
+            activeLandmarkState = self.dictionaryInput[activeInput.GetID()].dictionaryLandmark[selectedFiducialID]
+            markupsIndex = fidNode.GetMarkupIndexByID(selectedFiducialID)
+            if activeLandmarkState.mouvementSurfaceStatus:
+                activeLandmarkState.indexClosestPoint = self.logic.getClosestPointIndex(fidNode,
+                                                                                        slicer.util.getNode(activeInput.GetID()),
+                                                                                        markupsIndex)
+                self.logic.replaceLandmark(slicer.util.getNode(activeInput.GetID()),
+                                           fidNode,
+                                           markupsIndex,
+                                           activeLandmarkState.indexClosestPoint)
 
-                    if value.listIDFidPropagation != None :
-                        fidCoord = numpy.zeros(3)
-                        self.fidNode.GetNthFiducialPosition(key, fidCoord)
-                        for id in value.listIDFidPropagation:
-                            self.fidNode.SetNthFiducialPosition(id,
-                                                                fidCoord[0],
-                                                                fidCoord[1],
-                                                                fidCoord[2])
-                            self.dictionaryFiducial[id].indexClosestPoint = self.logic.getClosestPointIndex(self.fidNode,
-                                                                                                            self.dictionaryFiducial[id].inputAssociated,
-                                                                                                            id)
-                    time.sleep(0.05)
-                    i += 1
-            else:
-                i = 0
-                for key, value in self.dictionaryFiducial.iteritems():
-                    if value.mouvementSurfaceStatus:
-                       value.indexClosestPoint =  self.logic.getClosestPointIndex(self.fidNode,
-                                                                                  value.inputAssociated,
-                                                                                  key)
-                    if value.radiusROI >= 1:
-                        self.logic.getNeighbor(value)
+            # Moving the region if we move the fiducial
+            if activeLandmarkState.radiusROI > 0 and activeLandmarkState.radiusROI != 0:
+                listID = self.logic.defineNeighbor(activeInput,
+                                                   activeLandmarkState.indexClosestPoint,
+                                                   activeLandmarkState.radiusROI)
+                self.logic.addArrayFromIdList(listID, activeInput, activeLandmarkState.arrayName)
+                self.logic.displayROI(activeInput, activeLandmarkState.arrayName)
 
-                    time.sleep(0.05)
-                    i += 1
-
-            self.PointModifiedEventTag = self.fidNode.AddObserver(self.fidNode.PointModifiedEvent,
-                                                                  onPointModifiedEvent)
-
-        def onCloseScene(obj, event):
-            print " --- OnCloseScene ---"
-            # initialize Parameters
-            globals()["PickAndPaint"] = slicer.util.reloadScriptedModule("PickAndPaint")
-
-        self.PointModifiedEventTag = self.fidNode.AddObserver(self.fidNode.PointModifiedEvent, onPointModifiedEvent)
-        self.MarkupAddedEventTag = self.fidNode.AddObserver(self.fidNode.MarkupAddedEvent, onMarkupAddedEvent)
-
-        slicer.mrmlScene.AddObserver(slicer.mrmlScene.EndCloseEvent, onCloseScene)
-
-        self.layout.addStretch(1)
+                # Moving the region on propagated models if the region has been propagated before
+                if self.dictionaryInput[activeInput.GetID()].dictionaryPropInput and activeLandmarkState.propagatedBool:
+                    if self.correspondentShapes.isChecked():
+                        print " self.correspondentShapes.isChecked "
+                        for nodeID in self.dictionaryInput[activeInput.GetID()].dictionaryPropInput.iterkeys():
+                            print nodeID
+                            node = slicer.mrmlScene.GetNodeByID(nodeID)
+                            self.logic.propagateCorrespondent(activeInput, node, activeLandmarkState.arrayName)
+                    else:
+                        print " Not Checked "
+                        for nodeID in self.dictionaryInput[activeInput.GetID()].dictionaryPropInput.iterkeys():
+                            print nodeID
+                            node = slicer.mrmlScene.GetNodeByID(nodeID)
+                            self.logic.propagateNonCorrespondent(self.dictionaryInput[activeInput.GetID()].fidNodeID,
+                                                                 selectedFiducialID,
+                                                                 activeLandmarkState,
+                                                                 node)
+            time.sleep(0.08)
+            self.dictionaryInput[activeInput.GetID()].PointModifiedEventTag = \
+                fidNode.AddObserver(fidNode.PointModifiedEvent, self.onPointModifiedEvent)
 
 
     def onReload(self, moduleName="PickAndPaint"):
@@ -514,81 +490,131 @@ class PickAndPaintWidget:
         print " --------------------- RELOAD ------------------------ \n"
         globals()[moduleName] = slicer.util.reloadScriptedModule(moduleName)
 
-
 class PickAndPaintLogic:
     def __init__(self):
         pass
 
-    def getClosestPointIndex(self, fidNode,  input, fiducialID):
-        displayNode = fidNode.GetMarkupsDisplayNode()
+    def findIDFromLabel(self, activeInputLandmarkDict, fiducialLabel):
+        print " findIDFromLabel "
+        fiducialID = None
+        for ID, value in activeInputLandmarkDict.iteritems():
+            if activeInputLandmarkDict[ID].fiducialLabel == fiducialLabel:
+                fiducialID = ID
+                break
+        return fiducialID
+
+    def UpdateThreeDView(self, activeInput, dictionaryInput, landmarkLabel = None, functionCaller = None):
+        print " UpdateThreeDView() "
+        activeInputID = activeInput.GetID()
+        if functionCaller == 'onCurrentNodeChanged':
+            # Fiducial Visibility
+            for keyInput, valueInput in dictionaryInput.iteritems():
+                fidNode = slicer.app.mrmlScene().GetNodeByID(valueInput.fidNodeID)
+                if keyInput != activeInputID:
+                    if valueInput.dictionaryLandmark:
+                        for landID in valueInput.dictionaryLandmark.iterkeys():
+                            print "ID=", landID
+                            landmarkIndex = fidNode.GetMarkupIndexByID(landID)
+                            print "Index= ", landmarkIndex
+                            fidNode.SetNthFiducialVisibility(landmarkIndex, False)
+                else:
+                    if valueInput.dictionaryLandmark:
+                        for landID in valueInput.dictionaryLandmark.iterkeys():
+                            landmarkIndex = fidNode.GetMarkupIndexByID(landID)
+                            fidNode.SetNthFiducialVisibility(landmarkIndex, True)
+
+        if functionCaller == 'UpdateInterface' and landmarkLabel:
+            selectedFidReflID = self.findIDFromLabel(dictionaryInput[activeInput.GetID()].dictionaryLandmark,
+                                                     landmarkLabel)
+            fidNode = slicer.app.mrmlScene().GetNodeByID(dictionaryInput[activeInputID].fidNodeID)
+            for key in dictionaryInput[activeInputID].dictionaryLandmark.iterkeys():
+                markupsIndex = fidNode.GetMarkupIndexByID(key)
+                if key != selectedFidReflID:
+                    fidNode.SetNthMarkupLocked(markupsIndex, True)
+                else:
+                    fidNode.SetNthMarkupLocked(markupsIndex, False)
+
+            displayNode = activeInput.GetModelDisplayNode()
+            displayNode.SetScalarVisibility(False)
+            if dictionaryInput[activeInput.GetID()].dictionaryPropInput:
+                for nodeID in dictionaryInput[activeInput.GetID()].dictionaryPropInput:
+                    node = slicer.mrmlScene.GetNodeByID(nodeID)
+                    node.GetDisplayNode().SetScalarVisibility(False)
+            if selectedFidReflID:
+                if dictionaryInput[activeInput.GetID()].dictionaryLandmark[selectedFidReflID].radiusROI > 0:
+                    displayNode.SetActiveScalarName(dictionaryInput[activeInput.GetID()].dictionaryLandmark[selectedFidReflID].arrayName)
+                    displayNode.SetScalarVisibility(True)
+                    for nodeID in dictionaryInput[activeInput.GetID()].dictionaryPropInput:
+                        node = slicer.mrmlScene.GetNodeByID(nodeID)
+                        arrayID = self.findArray(node.GetPolyData().GetPointData(),
+                                                 dictionaryInput[activeInput.GetID()].dictionaryLandmark[selectedFidReflID].arrayName)
+                        if arrayID != -1:
+                            node.GetDisplayNode().SetActiveScalarName(dictionaryInput[activeInput.GetID()].dictionaryLandmark[selectedFidReflID].arrayName)
+                            node.GetDisplayNode().SetScalarVisibility(True)
+
+    def replaceLandmark(self, inputModel, fidNode, fiducialID, indexClosestPoint):
+        print " --- replaceLandmark --- "
+        polyData = inputModel.GetPolyData()
         fiducialCoord = numpy.zeros(3)
-        fidNode.GetNthFiducialPosition(fiducialID, fiducialCoord)
-
-        polyData = input.GetPolyData()
-
-        def calculateDistance(p0, p1):
-            V = vtk.vtkMath()
-            return V.Distance2BetweenPoints(p0, p1)
-
-        numberVertex = polyData.GetNumberOfPoints()
-        verticesModel = polyData.GetPoints()
-        distanceMin = vtk.vtkMath().Inf()
-        for i in range(0, numberVertex):
-            coordVerTemp = numpy.zeros(3)
-            verticesModel.GetPoint(i, coordVerTemp)
-            distance = calculateDistance(fiducialCoord, coordVerTemp)
-            if distance < distanceMin:
-                distanceMin = distance
-                indexClosestPoint = i
-
-        verticesModel.GetPoint(indexClosestPoint, fiducialCoord)
-
-        fiducialCoord2 = numpy.zeros(3)
-        fidNode.GetNthFiducialPosition(fiducialID, fiducialCoord2)
-
-        disabledModify = displayNode.StartModify()
+        polyData.GetPoints().GetPoint(indexClosestPoint, fiducialCoord)
         fidNode.SetNthFiducialPosition(fiducialID,
                                        fiducialCoord[0],
                                        fiducialCoord[1],
                                        fiducialCoord[2])
 
-        displayNode.EndModify(disabledModify)
+    def getClosestPointIndex(self, fidNode,  input, fiducialID):
+        print " --- getClosestPointIndex --- "
+        fiducialCoord = numpy.zeros(3)
         fidNode.GetNthFiducialPosition(fiducialID, fiducialCoord)
+        polyData = input.GetPolyData()
+
+        pointLocator = vtk.vtkPointLocator()
+        pointLocator.SetDataSet(polyData)
+        pointLocator.AutomaticOn()
+        pointLocator.BuildLocator()
+        indexClosestPoint = pointLocator.FindClosestPoint(fiducialCoord)
 
         return indexClosestPoint
 
+
     def displayROI(self, inputModelNode, scalarName):
+        print " --- displayROI --- "
+        polyData = inputModelNode.GetPolyData()
+        polyData.Modified()
         displayNode = inputModelNode.GetModelDisplayNode()
         disabledModify = displayNode.StartModify()
-        displayNode.SetScalarVisibility(True)
+
         displayNode.SetActiveScalarName(scalarName)
+        displayNode.SetScalarVisibility(True)
+
         displayNode.EndModify(disabledModify)
 
+
     def findArray(self, pointData, arrayName):
+        print " --- findArray --- "
         arrayID = -1
         if pointData.HasArray(arrayName) == 1:
             for i in range(0, pointData.GetNumberOfArrays()):
                 if pointData.GetArrayName(i) == arrayName:
                     arrayID = i
+                    break
         return arrayID
 
-    def addArray(self, connectedIdList, inputModelNode, arrayName):
+
+    def addArrayFromIdList(self, connectedIdList, inputModelNode, arrayName):
+        print " --- addArrayFromIdList --- "
         polyData = inputModelNode.GetPolyData()
         pointData = polyData.GetPointData()
         numberofIds = connectedIdList.GetNumberOfIds()
-        # arrayName = 'ROI'
-        arrayID = self.findArray( pointData, arrayName)
+        hasArrayInt = pointData.HasArray(arrayName)
 
-        if arrayID == -1: #no ROI Array found
-            print " ------------------------------ CREATED ---------------------------------"
-            arrayToAdd = vtk.vtkDoubleArray()
-            arrayToAdd.SetName(arrayName)
-        else:
-            print " ----------------------------- MODIFIED ---------------------------------"
-            arrayToAdd = pointData.GetArray(arrayID)
-            arrayToAdd.Reset()
-            arrayToAdd.Resize(0)
+        if hasArrayInt == 1:  #  ROI Array found
+            print "  MODIFIED "
+            pointData.RemoveArray(arrayName)
 
+        print "  CREATED  "
+        arrayToAdd = vtk.vtkDoubleArray()
+        arrayToAdd.SetName(arrayName)
         for i in range(0, polyData.GetNumberOfPoints()):
                 arrayToAdd.InsertNextValue(0.0)
         for i in range(0, numberofIds):
@@ -598,76 +624,74 @@ class PickAndPaintLogic:
         tableSize = 2
         lut.SetNumberOfTableValues(tableSize)
         lut.Build()
-        lut.SetTableValue(0, 0, 0, 1, 1)
-        lut.SetTableValue(1, 1, 0, 0, 1)
+        lut.SetTableValue(0, 0.23, 0.11, 0.8, 1)
+        # lut.SetTableValue(1, 0.8, 0.4, 0.9, 1)
+        lut.SetTableValue(1, 0.8, 0.3, 0.7, 1)
 
         arrayToAdd.SetLookupTable(lut)
         pointData.AddArray(arrayToAdd)
+        polyData.Modified()
         return True
 
-    def getNeighbor(self, fiducialState ):
-        print"----getNeighbor----"
-        def GetConnectedVertices(polyData, pointID):
-            cellList = vtk.vtkIdList()
-            idsList = vtk.vtkIdList()
-            idsList.InsertNextId(pointID)
-            # Get cells that vertex 'pointID' belongs to
-            polyData.GetPointCells(pointID, cellList)
-            numberOfIds = cellList.GetNumberOfIds()
 
-            for i in range(0, numberOfIds):
-                # Get points which compose all cells
-                pointIdList = vtk.vtkIdList()
-                polyData.GetCellPoints(cellList.GetId(i), pointIdList)
-                for i in range(0, pointIdList.GetNumberOfIds()):
-                    if pointIdList.GetId(i) != pointID:
-                        idsList.InsertUniqueId(pointIdList.GetId(i))
-            return idsList
+    def GetConnectedVertices(self, polyData, pointID):
+        # print " --- GetConnectedVertices --- "
+        cellList = vtk.vtkIdList()
+        idsList = vtk.vtkIdList()
+        idsList.InsertNextId(pointID)
+        # Get cells that vertex 'pointID' belongs to
+        polyData.GetPointCells(pointID, cellList)
+        numberOfIds = cellList.GetNumberOfIds()
+        for i in range(0, numberOfIds):
+            # Get points which compose all cells
+            pointIdList = vtk.vtkIdList()
+            polyData.GetCellPoints(cellList.GetId(i), pointIdList)
+            for i in range(0, pointIdList.GetNumberOfIds()):
+                if pointIdList.GetId(i) != pointID:
+                    idsList.InsertUniqueId(pointIdList.GetId(i))
+        return idsList
 
+
+    def defineNeighbor(self, inputModelNode, indexClosestPoint , distance):
+        print" --- defineNeighbor --- "
         def add2IdLists(list1, list2):
             for i in range(0, list2.GetNumberOfIds()):
                 list1.InsertUniqueId(list2.GetId(i))
             return list1
-
-
-        inputModelNode = fiducialState.inputAssociated
-        arrayName = fiducialState.arrayName
         polyData = inputModelNode.GetPolyData()
-        pointID = fiducialState.indexClosestPoint
-        distance = fiducialState.radiusROI
-        connectedVerticesList = vtk.vtkIdList()
-
-        connectedVerticesList = GetConnectedVertices(polyData, pointID)
+        connectedVerticesList = self.GetConnectedVertices(polyData, indexClosestPoint)
         if distance > 1:
             for dist in range(1, int(distance)):
                 for i in range(0, connectedVerticesList.GetNumberOfIds()):
-                    connectedList = GetConnectedVertices(polyData, connectedVerticesList.GetId(i))
+                    connectedList = self.GetConnectedVertices(polyData, connectedVerticesList.GetId(i))
                     verticesListTemp = add2IdLists(connectedVerticesList, connectedList)
                 connectedVerticesList = verticesListTemp
+        return connectedVerticesList
 
-        arrayAddedBool = self.addArray(connectedVerticesList, inputModelNode, arrayName)
-        print " arrayAddedBool : ", arrayAddedBool
-        if arrayAddedBool:
-            self.displayROI(inputModelNode, arrayName)
 
-        return True
+    def propagateCorrespondent(self, referenceInputModel, propagatedInputModel, arrayName):
+        print " ---- propagateCorrespondent ---- "
+        referencePointData = referenceInputModel.GetPolyData().GetPointData()
+        propagatedPointData = propagatedInputModel.GetPolyData().GetPointData()
+        arrayIDReference = self.findArray(referencePointData, arrayName)
+        arrayToPropagate = referencePointData.GetArray(arrayIDReference)
+        propagatedPointData.AddArray(arrayToPropagate)
+        self.displayROI(propagatedInputModel, arrayName)
+        arrayIDPropagated = self.findArray(propagatedPointData, arrayName)
+        if arrayIDReference != -1:
+            arrayToPropagate = referencePointData.GetArray(arrayIDReference)
+            if arrayIDPropagated != -1:
+                propagatedPointData.RemoveArray(arrayIDPropagated)
+            propagatedPointData.AddArray(arrayToPropagate)
+            self.displayROI(propagatedInputModel, arrayName)
+        else:
+            print " NO ROI ARRAY FOUND. PLEASE DEFINE ONE BEFORE."
+            pass
 
-    def propagateFiducial(self, fidNode, fiducialToPropagateID,  fiducialToPropagateState, fiducialToAddState, propagateInput ):
-        fiducialToPropagateCoord = numpy.zeros(3)
-        fidNode.GetNthFiducialPosition(fiducialToPropagateID, fiducialToPropagateCoord)
-        fiducialToAddState.fiducialLabel = fiducialToPropagateState.fiducialLabel + "_ROI"
-
-        fiducialToAddState.fiducialScale = 1.0
-
-        fiducialAddedID = fidNode.AddFiducial(fiducialToPropagateCoord[0],
-                                              fiducialToPropagateCoord[1],
-                                              fiducialToPropagateCoord[2],
-                                              fiducialToAddState.fiducialLabel)
-
-        fiducialToAddState.indexClosestPoint = self.getClosestPointIndex(fidNode,
-                                                                         propagateInput,
-                                                                         fiducialAddedID)
-
-        fiducialToAddState.radiusROI = fiducialToPropagateState.radiusROI
-        fiducialToAddState.arrayName = fiducialToPropagateState.arrayName
-        fiducialToAddState.mouvementSurfaceStatus = True
+    def propagateNonCorrespondent(self, fidNodeID, fiducialID, fiducialState,  propagatedInput):
+        fidNode = slicer.app.mrmlScene().GetNodeByID(fidNodeID)
+        index = fidNode.GetMarkupIndexByID(fiducialID)
+        indexClosestPoint = self.getClosestPointIndex(fidNode, propagatedInput, index)
+        listID = self.defineNeighbor(propagatedInput, indexClosestPoint, fiducialState.radiusROI)
+        self.addArrayFromIdList(listID, propagatedInput, fiducialState.arrayName)
+        self.displayROI(propagatedInput, fiducialState.arrayName)

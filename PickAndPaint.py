@@ -1,21 +1,24 @@
 import vtk, qt, ctk, slicer
 import numpy
 import time
+from slicer.ScriptedLoadableModule import *
 
 
-class PickAndPaint:
+class PickAndPaint(ScriptedLoadableModule):
     def __init__(self, parent):
-        parent.title = "Pick 'n Paint "
-        parent.dependencies = []
-        parent.contributors = ["Lucie Macron"]
-        parent.helpText = """
-        """
-        parent.acknowledgementText = """
-        This module was developed by Lucie Macron, University of Michigan
-        """
-        self.parent = parent
+      ScriptedLoadableModule.__init__(self, parent)
+      parent.title = "Pick 'n Paint "
+      parent.categories = ["Shape Analysis"]
+      self.parent.dependencies = []
+      self.parent.contributors = ["Lucie Macron (University Of Michigan)"]
+      self.parent.helpText = """
+          Pick 'n Paint tool allows users to select ROIs on a reference model and to propagate it over different time point models.
+          """
+      self.parent.acknowledgementText = """
+          This work was supported by the National Institues of Dental and Craniofacial Research and Biomedical Imaging and Bioengineering of the National Institutes of Health under Award Number R01DE024450.
+          """
 
-class PickAndPaintWidget:
+class PickAndPaintWidget(ScriptedLoadableModuleWidget):
     class fiducialState(object):
         def __init__(self):
             self.fiducialLabel = None
@@ -43,30 +46,9 @@ class PickAndPaintWidget:
                                       #  1: Correspondent Shapes
                                       #  2: Non Correspondent Shapes
 
-    def __init__(self, parent=None):
-        self.developerMode = True
-
-        if not parent:
-            self.parent = slicer.qMRMLWidget()
-            self.parent.setLayout(qt.QVBoxLayout())
-            self.parent.setMRMLScene(slicer.mrmlScene)
-        else:
-            self.parent = parent
-        self.layout = self.parent.layout()
-
-        if not parent:
-            self.setup()
-            self.parent.show()
-
     def setup(self):
         print " ----- SetUp ------"
-        if self.developerMode:
-            self.reloadButton = qt.QPushButton("Reload")
-            self.reloadButton.toolTip = "Reload this module"
-            self.reloadButton.name = "SurfaceToolbox Reload"
-            self.layout.addWidget(self.reloadButton)
-            self.reloadButton.connect('clicked()', self.onReload)
-
+        ScriptedLoadableModuleWidget.setup(self)
         # ------------------------------------------------------------------------------------
         #                                   Global Variables
         # ------------------------------------------------------------------------------------
@@ -482,18 +464,9 @@ class PickAndPaintWidget:
             self.dictionaryInput[activeInput.GetID()].PointModifiedEventTag = \
                 fidNode.AddObserver(fidNode.PointModifiedEvent, self.onPointModifiedEvent)
 
-
-    def onReload(self, moduleName="PickAndPaint"):
-        """Generic reload method for any scripted module.
-        ModuleWizard will subsitute correct default moduleName.
-        """
-        print " --------------------- RELOAD ------------------------ \n"
-        globals()[moduleName] = slicer.util.reloadScriptedModule(moduleName)
-
-class PickAndPaintLogic:
+class PickAndPaintLogic(ScriptedLoadableModuleLogic):
     def __init__(self):
         pass
-
     def findIDFromLabel(self, activeInputLandmarkDict, fiducialLabel):
         print " findIDFromLabel "
         fiducialID = None
@@ -695,3 +668,35 @@ class PickAndPaintLogic:
         listID = self.defineNeighbor(propagatedInput, indexClosestPoint, fiducialState.radiusROI)
         self.addArrayFromIdList(listID, propagatedInput, fiducialState.arrayName)
         self.displayROI(propagatedInput, fiducialState.arrayName)
+
+class PickAndPaintTest(ScriptedLoadableModuleTest):
+    def setUp(self):
+        slicer.mrmlScene.Clear(0)
+
+    def runTest(self):
+        print "TESTESTESTEST"
+        self.defineSphere()
+
+    def defineSphere(self):
+        renderer = vtk.vtkRenderer()
+        rendererWindow = vtk.vtkRenderWindow()
+        rendererWindow.AddRenderer(renderer)
+        rendererWindowInteractor = vtk.vtkRenderWindowInteractor()
+        rendererWindowInteractor.SetRenderWindow(rendererWindow)
+
+        sphereSource = vtk.vtkSphereSource()
+        sphereSource.SetCenter(0,0,0)
+        sphereSource.SetRadius(5.0)
+
+        mapper = vtk.vtkPolyDataMapper()
+        if vtk.VTK_MAJOR_VERSION <= 5:
+            mapper.SetInput(sphereSource.GetOutput())
+        else:
+            mapper.SetInputConnection(sphereSource.GetOutputPort())
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        renderer.AddActor(actor)
+        rendererWindowInteractor.Initialize()
+        rendererWindow.Render()
+        rendererWindowInteractor.Start()
+
